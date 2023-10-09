@@ -1,49 +1,75 @@
-import express from "express";
-import handlebars from "express-handlebars";
-import cookieParser from "cookie-parser";
-import passport from "passport";
-import initPassport from "./config/passport.config.js";
-import dotenv from "dotenv";
-import mongoose from "mongoose";
-import productsRouter from "./routes/products.router.js";
-import cartsRouter from "./routes/carts.router.js";
-import productsViewRouter from "./routes/productsView.router.js";
-import cartsViewRouter from "./routes/cartsView.router.js";
-import userViewRouter from "./routes/userView.router.js";
-import sessionRouter from "./routes/session.router.js";
-import userRouter from "./routes/user.router.js";
+import 'dotenv/config'; 
+import express from 'express';
+import session from 'express-session';
+import {Server} from 'socket.io';
+import mongoose from 'mongoose';
+import mongoStore from 'connect-mongo';
+import handlebars from 'express-handlebars';
+import passport from 'passport';
+
+import routesRouter from './routers/routes.router.js';
+import viewsRouter from './routers/views.router.js';
+import __dirname from './utils.js';
+import { messageModel} from './dao/db/models/messages.model.js';
+import initializatePassport from './config/passport.config.js';
 
 const app = express();
-dotenv.config();
 
+app.engine('handlebars', handlebars.engine());
+app.set('views', __dirname + '/views');
+app.set('view engine', 'handlebars');
+
+app.use(express.static(__dirname + '/../public'));
 app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
-app.use(express.static("public"));
-app.use(cookieParser());
-initPassport();
+app.use(express.urlencoded({extended:true}));
+
+const uri= "mongodb+srv://ignacioiglesias8:9HzbVxanl92pkney@cluster0.paoiaa9.mongodb.net/ecommerce?retryWrites=true&w=majority"
+mongoose.connect(uri)
+
+app.use(session(
+    {
+        store: mongoStore.create({
+            mongoUrl: uri,
+            mongoOptions: {useUnifiedTopology: true},
+            ttl: 10000
+        }),
+        secret: 'secretPhrase',
+        resave: false,
+        saveUninitialized: false
+    }
+));
+
+initializatePassport();
 app.use(passport.initialize());
+app.use(passport.session());
 
-app.engine("handlebars", handlebars.engine());
-app.set("view engine", "handlebars");
-app.set("views", "./src/views");
+app.use('/api', routesRouter);
+app.use('/', viewsRouter);
 
-try{
-  const db = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@${process.env.DB}`;
-  await mongoose.connect(db);
-  console.log("Database connected");
-}catch (error){
-    console.log(error);
-}
+const PORT= 8080;
+const httpServer = app.listen(PORT, (err, res) => {
+    console.log(`servidor en el PORT: ${PORT}`)
+});
 
-app.use("/", userViewRouter);
-app.use("/api/sessions", userRouter);
-app.use("/api/sessions", sessionRouter);
-app.use("/api/products", productsRouter);
-app.use("/api/carts", cartsRouter);
-app.use("/products", productsViewRouter);
-app.use("/carts", cartsViewRouter);
-const port = 8080;
+const io = new Server(httpServer);
 
-app.listen(port, () => {
-  console.log(`Server running on port ${port}`);
+//websocket para chat
+const messages = [];
+io.on('connection', socket => {
+    console.log('Nuevo cliente conectado ', socket.id);
+
+    socket.on('message', async data => {
+        try {
+            await messageModel.create(data); 
+        } catch (error) {
+            console.error('Error al guardar el mensaje en la base de datos:', error.message);
+        }
+        messages.push(data);
+        io.emit('messagesLogs', messages);
+    });
+
+    socket.on('userConnect', async data => {
+        socket.emit('messagesLogs', await messageModel.find());
+        socket.broadcast.emit('newUser', data);
+    });
 });
